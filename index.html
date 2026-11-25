@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SOLITAIRE · ASCII</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      background-color: #030304;
+      color: #c8ccd4;
+      font-family: "Courier New", Courier, monospace;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      overflow: hidden;
+      cursor: pointer;
+    }
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+
+  <script>
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+
+    let WIDTH = (canvas.width = window.innerWidth);
+    let HEIGHT = (canvas.height = window.innerHeight);
+
+    window.addEventListener("resize", () => {
+      WIDTH = canvas.width = window.innerWidth;
+      HEIGHT = canvas.height = window.innerHeight;
+      initStars();
+    });
+
+    const TAU = Math.PI * 2;
+    const ASCII_CHARS = " .:-=+*#%@";
+
+    // Videodaki oranlar ve gerçekçi çok yüzeyli pırlanta kesimi
+    const R_BAND = 0.88;
+    const BAND_THICK = 0.14;
+    const TABLE_Y = 1.50;
+    const TABLE_R = 0.24;
+    const CROWN_MID_Y = 1.41;
+    const CROWN_MID_R = 0.33;
+    const GIRDLE_Y = 1.33;
+    const GIRDLE_R = 0.40;
+    const PAV_MID_Y = 1.14;
+    const PAV_MID_R = 0.21;
+    const CULET_Y = 0.94;
+
+    // 3D Vektör İşlemleri
+    const vAdd = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+    const vSub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    const vScale = (a, s) => [a[0] * s, a[1] * s, a[2] * s];
+    const vDot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    const vCross = (a, b) => [
+      a[1] * b[2] - a[2] * b[1],
+      a[2] * b[0] - a[0] * b[2],
+      a[0] * b[1] - a[1] * b[0],
+    ];
+    const vNorm = (a) => {
+      const len = Math.hypot(a[0], a[1], a[2]) || 1;
+      return [a[0] / len, a[1] / len, a[2] / len];
+    };
+
+    // --- 1. SADE TERMİNAL YILDIZ ARKA PLANI ---
+    let stars = [];
+    function initStars() {
+      stars = [];
+      const count = Math.floor((WIDTH * HEIGHT) / 5500);
+      const glyphs = [".", "·", "+", "*"];
+      for (let i = 0; i < count; i++) {
+        stars.push({
+          x: Math.random() * WIDTH,
+          y: Math.random() * HEIGHT,
+          glyph: Math.random() < 0.82 ? "." : glyphs[Math.floor(Math.random() * glyphs.length)],
+          phase: Math.random() * TAU,
+          speed: 0.8 + Math.random() * 2.2,
+          baseAlpha: 0.12 + Math.random() * 0.35,
+        });
+      }
+    }
+    initStars();
+
+    // --- 2. 3D NOKTA BULUTU (HALKA + GERÇEKÇİ PIRLANTA + TIRNAKLAR + KELEBEK) ---
+    const points = [];
+
+    function addPoint(p, n, part, facetId = 0) {
+      points.push({
+        p,
+        n: vNorm(n),
+        part, // 0: band, 1: gem, 2: prongs, 3: butterfly wings
+        facetId,
+        seed: Math.random(),
+        order: 0,
+      });
+    }
+
+    // Yüzük Halkası (Band)
+    function buildBand() {
+      const uSteps = 160;
+      const vSteps = 26;
+      for (let i = 0; i < uSteps; i++) {
+        const u = (TAU * i) / uSteps;
+        const cu = Math.cos(u);
+        const su = Math.sin(u);
+        for (let j = 0; j < vSteps; j++) {
+          const v = (TAU * j) / vSteps;
+          const cv = Math.cos(v);
+          const sv = Math.sin(v);
+
+          const taper = 1 - 0.18 * Math.max(0, su);
+          const rTube = BAND_THICK * taper;
+          const r = R_BAND + rTube * cv;
+
+          addPoint([r * cu, r * su, rTube * 0.72 * sv], [cv * cu, cv * su, sv], 0, 0);
+        }
+      }
+    }
+
+    // Faset doldurma fonksiyonu
+    function facet(a, b, c, normal, steps, facetId) {
+      for (let i = 0; i <= steps; i++) {
+        const u = i / steps;
+        for (let j = 0; j <= steps - i; j++) {
+          const v = j / steps;
+          const w = 1 - u - v;
+          const p = [
+            a[0] * w + b[0] * u + c[0] * v,
+            a[1] * w + b[1] * u + c[1] * v,
+            a[2] * w + b[2] * u + c[2] * v,
+          ];
+          addPoint(p, normal, 1, facetId);
+        }
+      }
+    }
+
+    // Gerçekçi Round Brilliant Kesim Pırlanta
+    function buildGem() {
+      const n = 16;
+      const tableCenter = [0, TABLE_Y, 0];
+      const culet = [0, CULET_Y, 0];
+      let fId = 1;
+
+      for (let i = 0; i < n; i++) {
+        const a0 = (TAU * i) / n;
+        const a1 = (TAU * (i + 1)) / n;
+        const aMid = (a0 + a1) / 2;
+
+        const t0 = [TABLE_R * Math.cos(a0), TABLE_Y, TABLE_R * Math.sin(a0)];
+        const t1 = [TABLE_R * Math.cos(a1), TABLE_Y, TABLE_R * Math.sin(a1)];
+        const cm = [CROWN_MID_R * Math.cos(aMid), CROWN_MID_Y, CROWN_MID_R * Math.sin(aMid)];
+
+        const g0 = [GIRDLE_R * Math.cos(a0), GIRDLE_Y, GIRDLE_R * Math.sin(a0)];
+        const g1 = [GIRDLE_R * Math.cos(a1), GIRDLE_Y, GIRDLE_R * Math.sin(a1)];
+        const gm = [GIRDLE_R * Math.cos(aMid), GIRDLE_Y, GIRDLE_R * Math.sin(aMid)];
+
+        const pm = [PAV_MID_R * Math.cos(aMid), PAV_MID_Y, PAV_MID_R * Math.sin(aMid)];
+
+        // Tabla
+        facet(tableCenter, t0, t1, [0, 1, 0], 6, fId++);
+
+        // Yıldız fasetleri
+        let nStar = vCross(vSub(t1, t0), vSub(cm, t0));
+        if (vDot(nStar, [Math.cos(aMid), 1, Math.sin(aMid)]) < 0) nStar = vScale(nStar, -1);
+        facet(t0, t1, cm, nStar, 6, fId++);
+
+        // Bezel & Taç yan fasetleri
+        let nB1 = vCross(vSub(cm, t0), vSub(g0, t0));
+        if (vDot(nB1, [Math.cos(a0), 0.7, Math.sin(a0)]) < 0) nB1 = vScale(nB1, -1);
+        facet(t0, cm, g0, nB1, 6, fId++);
+
+        let nB2 = vCross(vSub(g1, t1), vSub(cm, t1));
+        if (vDot(nB2, [Math.cos(a1), 0.7, Math.sin(a1)]) < 0) nB2 = vScale(nB2, -1);
+        facet(t1, g1, cm, nB2, 6, fId++);
+
+        let nUg = vCross(vSub(g1, g0), vSub(cm, g0));
+        if (vDot(nUg, [Math.cos(aMid), 0.5, Math.sin(aMid)]) < 0) nUg = vScale(nUg, -1);
+        facet(g0, g1, cm, nUg, 6, fId++);
+
+        // Külah üst ve ana fasetleri
+        let nLg1 = vCross(vSub(pm, g0), vSub(gm, g0));
+        if (vDot(nLg1, [Math.cos(a0), -0.6, Math.sin(a0)]) < 0) nLg1 = vScale(nLg1, -1);
+        facet(g0, gm, pm, nLg1, 6, fId++);
+
+        let nLg2 = vCross(vSub(g1, gm), vSub(pm, gm));
+        if (vDot(nLg2, [Math.cos(a1), -0.6, Math.sin(a1)]) < 0) nLg2 = vScale(nLg2, -1);
+        facet(gm, g1, pm, nLg2, 6, fId++);
+
+        let nP1 = vCross(vSub(culet, g0), vSub(pm, g0));
+        if (vDot(nP1, [Math.cos(a0), -0.8, Math.sin(a0)]) < 0) nP1 = vScale(nP1, -1);
+        facet(g0, pm, culet, nP1, 7, fId++);
+
+        let nP2 = vCross(vSub(pm, g1), vSub(culet, g1));
+        if (vDot(nP2, [Math.cos(a1), -0.8, Math.sin(a1)]) < 0) nP2 = vScale(nP2, -1);
+        facet(pm, g1, culet, nP2, 7, fId++);
+      }
+    }
+
+    // 4 Tırnak (Prongs)
+    function buildProngs() {
+      for (let i = 0; i < 4; i++) {
+        const a = (TAU * (i + 0.5)) / 4;
+        const base = [0.46 * Math.cos(a), R_BAND + 0.02, 0.46 * Math.sin(a)];
+        const tip = [
+          (GIRDLE_R + 0.025) * Math.cos(a),
+          CROWN_MID_Y + 0.03,
+          (GIRDLE_R + 0.025) * Math.sin(a),
+        ];
+
+        const d = vNorm(vSub(tip, base));
+        const s = vNorm(vCross(d, [0, 1, 0]));
+        const u = vCross(s, d);
+
+        const tSteps = 22;
+        const rSteps = 12;
+        for (let ti = 0; ti <= tSteps; ti++) {
+          const t = ti / tSteps;
+          const center = vAdd(base, vScale(vSub(tip, base), t));
+          const rad = 0.032 * (1 - 0.25 * t);
+
+          for (let ri = 0; ri < rSteps; ri++) {
+            const th = (TAU * ri) / rSteps;
+            const n = vAdd(vScale(s, Math.cos(th)), vScale(u, Math.sin(th)));
+            const p = vAdd(center, vScale(n, rad));
+            addPoint(p, n, 2, 0);
+          }
+        }
+      }
+    }
+
+    // Videodaki Kelebek Kanadı / Yörünge Noktaları (00:08'den sonra belirir)
+    function buildButterflyWings() {
+      const steps = 420;
+      for (let side of [-1, 1]) {
+        for (let i = 0; i < steps; i++) {
+          const t = (Math.PI * i) / steps;
+          // Üst kanat eğrisi
+          const rUpper = Math.sin(t) * Math.pow(Math.sin(t * 0.85), 0.6) * 1.48;
+          const xU = side * (0.35 + rUpper * Math.sin(t * 1.15));
+          const yU = 0.55 + rUpper * Math.cos(t * 0.85) * 0.85;
+          const zU = -0.35 - 0.25 * Math.sin(t);
+          addPoint([xU, yU, zU], [side * 0.4, 0.3, 0.8], 3, 0);
+
+          // Alt kanat eğrisi
+          if (i % 2 === 0) {
+            const rLower = Math.sin(t) * 0.92;
+            const xL = side * (0.32 + rLower * Math.sin(t * 1.1));
+            const yL = 0.15 - rLower * Math.abs(Math.cos(t * 0.7)) * 0.78;
+            const zL = -0.35 - 0.2 * Math.sin(t);
+            addPoint([xL, yL, zL], [side * 0.4, -0.2, 0.8], 3, 0);
+          }
+        }
+      }
+    }
+
+    // Videodaki draw_order() mantığı: Alttan yukarıya çizim dalgası
+    function computeDrawOrder() {
+      for (const pt of points) {
+        const [x, y] = pt.p;
+        if (pt.part === 0) {
+          const ang = Math.atan2(y, x);
+          const fromBottom = Math.abs(ang + Math.PI / 2);
+          const norm = fromBottom > Math.PI ? TAU - fromBottom : fromBottom;
+          pt.order = norm / Math.PI;
+        } else if (pt.part === 2) {
+          pt.order = 1.0 + ((y - R_BAND) / (TABLE_Y - R_BAND)) * 0.35;
+        } else if (pt.part === 1) {
+          pt.order = 1.35 + ((y - CULET_Y) / (TABLE_Y - CULET_Y)) * 0.45;
+        } else {
+          // Kelebek kanatları yüzük tamamlandıktan sonra dışa doğru açılır
+          pt.order = 1.9 + (Math.abs(x) / 1.85) * 0.55;
+        }
+      }
+    }
+
+    buildBand();
+    buildGem();
+    buildProngs();
+    buildButterflyWings();
+    computeDrawOrder();
+
+    function rotY(v, a) {
+      const c = Math.cos(a);
+      const s = Math.sin(a);
+      return [c * v[0] + s * v[2], v[1], -s * v[0] + c * v[2]];
+    }
+
+    function rotX(v, a) {
+      const c = Math.cos(a);
+      const s = Math.sin(a);
+      return [v[0], c * v[1] - s * v[2], s * v[1] + c * v[2]];
+    }
+
+    // Videodaki gibi keskin ASCII artı (+) şeklinde glint çizimi
+    function drawAsciiGlint(x, y, size) {
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText("+", x, y);
+      if (size > 1) {
+        ctx.fillStyle = "rgba(255, 255, 255, 0.75)";
+        ctx.fillText("-", x - 7, y);
+        ctx.fillText("-", x + 7, y);
+        ctx.fillText("|", x, y - 7);
+        ctx.fillText("|", x, y + 7);
+      }
+    }
+
+    let startTime = performance.now();
+    const DRAW_DURATION = 5.4;
+
+    function render(now) {
+      const t = (now - startTime) / 1000;
+
+      // Saf siyah/antrasit terminal arka plan
+      ctx.fillStyle = "#030304";
+      ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+      // Arka plan yıldızları (nokta ve minik artılar)
+      ctx.font = "10px 'Courier New', monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      for (const s of stars) {
+        const alpha = s.baseAlpha * (0.5 + 0.5 * Math.sin(t * s.speed + s.phase));
+        ctx.fillStyle = `rgba(180, 185, 195, ${alpha})`;
+        ctx.fillText(s.glyph, s.x, s.y);
+      }
+
+      // Çizim dalgası ilerlemesi
+      const drawProgress = Math.min(2.6, Math.max(0, (t - 0.3) / (DRAW_DURATION / 2.6)));
+      const spinAngle = t > 1.0 ? (t - 1.0) * 0.82 : 0;
+
+      // Videodaki lights(t): key light + hareketli rim light
+      const keyLight = vNorm([0.0, 0.8, 0.6]);
+      const rimLight = vNorm([Math.cos(t * 2.5), 0.5, Math.sin(t * 2.5)]);
+      const viewDir = [0, 0, 1];
+
+      const projected = [];
+      const asciiGlints = [];
+      let activeGlints = 0;
+
+      const baseScale = Math.min(WIDTH, HEIGHT) * 0.82;
+
+      for (let i = 0; i < points.length; i++) {
+        const pt = points[i];
+        if (pt.order > drawProgress) continue;
+
+        const headDist = drawProgress - pt.order;
+        const isHead = headDist >= 0 && headDist < 0.06;
+
+        let p = [...pt.p];
+        let n = [...pt.n];
+
+        // Kelebek kanatları hafifçe çırpar
+        if (pt.part === 3) {
+          const flap = Math.sin(t * 3.6) * 0.24 * Math.abs(p[0]);
+          p[2] += flap;
+          p[1] += Math.cos(t * 3.6) * 0.03;
+        }
+
+        // Yüzük kendi ekseninde döner
+        if (pt.part !== 3) {
+          p = rotY(p, spinAngle);
+          n = rotY(n, spinAngle);
+        } else {
+          // Kelebek çok hafif süzülür
+          p = rotY(p, Math.sin(t * 0.9) * 0.14);
+        }
+
+        p = rotX(p, 0.26);
+        n = rotX(n, 0.26);
+
+        const camZ = 4.25;
+        const z = p[2] + camZ;
+        const scale = baseScale / z;
+
+        const sx = WIDTH / 2 + p[0] * scale;
+        const sy = HEIGHT / 2 + baseScale * 0.08 - p[1] * scale;
+
+        const diffKey = Math.max(0, vDot(n, keyLight));
+        const diffRim = Math.max(0, vDot(n, rimLight));
+
+        // Elmas yüzeyleri (fasetler) döndükçe gerçekçi ışık yansıması üretir
+        const rVec = vSub(vScale(n, 2 * vDot(n, keyLight)), keyLight);
+        const spec = Math.pow(Math.max(0, vDot(rVec, viewDir)), 14);
+        const facetShine = Math.sin(spinAngle * 5.5 + pt.facetId * 1.9 + t * 2.2);
+
+        let lum = 0.12 + diffKey * 0.52 + diffRim * 0.34 + spec * 0.65;
+
+        if (pt.part === 1) {
+          // Gerçekçi pırlanta faset kontrastı (bazı yüzeyler koyu kristal, bazıları parlak ayna)
+          const facetTone = 0.5 + 0.5 * Math.sin(pt.facetId * 2.3 + spinAngle * 2.8);
+          lum = 0.16 + diffKey * 0.42 + spec * 0.95 + facetTone * 0.28;
+          if (facetShine > 0.82) lum = 1.0;
+        } else if (pt.part === 3) {
+          lum = 0.32 + 0.25 * Math.sin(t * 4 + pt.seed * 15);
+        }
+
+        const isGlint =
+          pt.part === 1 &&
+          spec > 0.68 &&
+          facetShine > 0.86 &&
+          Math.sin(pt.seed * 110 + t * 9) > 0.78;
+
+        if (isGlint) {
+          activeGlints++;
+          if (asciiGlints.length < 16) {
+            asciiGlints.push({ x: sx, y: sy, size: spec > 0.85 ? 2 : 1 });
+          }
+        }
+
+        if (isHead) lum = 1.0;
+        lum = Math.max(0.05, Math.min(1, lum));
+
+        projected.push({
+          sx,
+          sy,
+          z,
+          lum,
+          isGlint: isGlint || isHead,
+          part: pt.part,
+        });
+      }
+
+      projected.sort((a, b) => b.z - a.z);
+
+      const fontSize = Math.max(9, Math.floor(baseScale / 76));
+      ctx.font = `bold ${fontSize}px 'Courier New', monospace`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+
+      for (let i = 0; i < projected.length; i++) {
+        const item = projected[i];
+        const charIdx = Math.min(
+          ASCII_CHARS.length - 1,
+          Math.floor(item.lum * (ASCII_CHARS.length - 1))
+        );
+        const ch = item.isGlint ? "*" : item.part === 3 ? "·" : ASCII_CHARS[charIdx];
+
+        if (item.isGlint) {
+          ctx.fillStyle = "#ffffff";
+        } else if (item.part === 1) {
+          // Saf monokrom gümüş/kristal beyaz tonları
+          const v = Math.floor(110 + item.lum * 145);
+          ctx.fillStyle = `rgb(${v}, ${v}, ${v + 4})`;
+        } else if (item.part === 3) {
+          const v = Math.floor(120 + item.lum * 110);
+          ctx.fillStyle = `rgba(${v}, ${v}, ${v + 8}, 0.8)`;
+        } else {
+          const v = Math.floor(55 + item.lum * 185);
+          ctx.fillStyle = `rgb(${v}, ${v}, ${v + 6})`;
+        }
+
+        ctx.fillText(ch, item.sx, item.sy);
+      }
+
+      // Elmas üzerindeki keskin ASCII '+' ışık parlamaları
+      for (const g of asciiGlints) {
+        drawAsciiGlint(g.x, g.y, g.size);
+      }
+
+      // Videodaki sağ üst ve sol alt terminal HUD yazıları
+      const deg = (((spinAngle * 180) / Math.PI) % 360 + 360) % 360;
+      ctx.textAlign = "right";
+      ctx.fillStyle = "#8b949e";
+      ctx.font = "11px 'Courier New', monospace";
+      ctx.fillText("• 30 FPS", WIDTH - 24, 24);
+
+      ctx.textAlign = "left";
+      const bottomY = HEIGHT - 54;
+      ctx.fillStyle = "#c9d1d9";
+      ctx.fillText("SOLITAIRE · ASCII", 24, bottomY);
+      ctx.fillStyle = "#8b949e";
+      ctx.fillText(
+        `rotation ${deg.toFixed(2)}°   glints ${activeGlints}   points ${projected.length.toLocaleString()}`,
+        24,
+        bottomY + 18
+      );
+      ctx.fillStyle = "#6e7681";
+      ctx.fillText("01:02 / 01:28", 24, bottomY + 36);
+
+      ctx.textAlign = "right";
+      ctx.fillText("running · 30 fps", WIDTH - 24, bottomY + 36);
+
+      requestAnimationFrame(render);
+    }
+
+    canvas.addEventListener("click", () => {
+      startTime = performance.now();
+    });
+
+    requestAnimationFrame(render);
+  </script>
+</body>
+</html>
